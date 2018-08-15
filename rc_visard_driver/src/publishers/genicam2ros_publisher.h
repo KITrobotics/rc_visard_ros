@@ -50,7 +50,7 @@ public:
   /**
    * @param frame_id_prefix prefix for frame ids in published ros messages
    */
-  GenICam2RosPublisher(const std::string& frame_id_prefix) : frame_id(frame_id_prefix + "camera")
+  GenICam2RosPublisher(const std::string& frame_id_prefix) : frame_id(frame_id_prefix + "roboception_camera")
   {
   }
 
