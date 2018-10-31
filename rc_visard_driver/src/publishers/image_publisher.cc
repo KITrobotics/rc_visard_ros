@@ -41,67 +41,58 @@
 namespace rc
 {
 ImagePublisher::ImagePublisher(image_transport::ImageTransport& it, const std::string& frame_id_prefix, bool _left,
-                               bool _color)
+                               bool _color, bool out1_filter)
   : GenICam2RosPublisher(frame_id_prefix)
 {
   left = _left;
   color = _color;
   seq = 0;
 
+  std::string name;
+
   if (left)
   {
-    if (color)
-    {
-      pub = it.advertise("left/image_rect_color", 1);
-    }
-    else
-    {
-      pub = it.advertise("left/image_rect", 1);
-    }
+    name = "left/image_rect";
   }
   else
   {
-    if (color)
-    {
-      pub = it.advertise("right/image_rect_color", 1);
-    }
-    else
-    {
-      pub = it.advertise("right/image_rect", 1);
-    }
+    name = "right/image_rect";
+  }
+
+  if (color)
+  {
+    name = name + "_color";
+  }
+
+  pub = it.advertise(name, 1);
+
+  if (out1_filter)
+  {
+    pub_out1_low = it.advertise(name + "_out1_low", 1);
+    pub_out1_high = it.advertise(name + "_out1_high", 1);
   }
 }
 
 bool ImagePublisher::used()
 {
-  return pub.getNumSubscribers() > 0;
+  return pub.getNumSubscribers() > 0 || pub_out1_low.getNumSubscribers() > 0 || pub_out1_high.getNumSubscribers() > 0;
 }
 
-namespace
+void ImagePublisher::publish(const rcg::Buffer* buffer, uint32_t part, uint64_t pixelformat)
 {
-/**
-  Clamp the given value to the range of 0 to 255 and cast to byte.
-*/
-
-uint8_t clamp8(int v)
-{
-  if (v < 0)
-  {
-    v = 0;
-  }
-
-  if (v > 255)
-  {
-    v = 255;
-  }
-
-  return static_cast<uint8_t>(v);
-}
+  publish(buffer, part, pixelformat, false);
 }
 
-void ImagePublisher::publish(const rcg::Buffer* buffer, uint64_t pixelformat)
+void ImagePublisher::publish(const rcg::Buffer* buffer, uint32_t part, uint64_t pixelformat, bool out1)
 {
-  if (pub.getNumSubscribers() > 0 && (pixelformat == Mono8 || pixelformat == YCbCr411_8))
+  bool sub = (pub.getNumSubscribers() > 0 && (!out1_alternate || !out1));
+
+  if (!out1 && pub_out1_low.getNumSubscribers() > 0)
+    sub = true;
+  if (out1 && pub_out1_high.getNumSubscribers() > 0)
+    sub = true;
+
+  if (sub && (pixelformat == Mono8 || pixelformat == YCbCr411_8))
   {
     // create image and initialize header
 
@@ -117,8 +108,8 @@ void ImagePublisher::publish(const rcg::Buffer* buffer, uint64_t pixelformat)
 
     // set image size
 
-    im->width = static_cast<uint32_t>(buffer->getWidth());
-    im->height = static_cast<uint32_t>(buffer->getHeight());
+    im->width = static_cast<uint32_t>(buffer->getWidth(part));
+    im->height = static_cast<uint32_t>(buffer->getHeight(part));
     im->is_bigendian = false;
 
     bool stacked = false;
@@ -131,12 +122,12 @@ void ImagePublisher::publish(const rcg::Buffer* buffer, uint64_t pixelformat)
 
     // get pointer to image data in buffer
 
-    const uint8_t* ps = static_cast<const uint8_t*>(buffer->getBase()) + buffer->getImageOffset();
-    size_t pstep = im->width + buffer->getXPadding();
+    const uint8_t* ps = static_cast<const uint8_t*>(buffer->getBase(part));
+    size_t pstep = im->width + buffer->getXPadding(part);
 
     if (pixelformat == YCbCr411_8)
     {
-      pstep = (im->width >> 2) * 6 + buffer->getXPadding();
+      pstep = (im->width >> 2) * 6 + buffer->getXPadding(part);
     }
 
     if (!left)
@@ -221,7 +212,12 @@ void ImagePublisher::publish(const rcg::Buffer* buffer, uint64_t pixelformat)
 
     // publish message
 
-    pub.publish(im);
+    if (!out1_alternate || !out1)
+      pub.publish(im);
+    if (!out1)
+      pub_out1_low.publish(im);
+    if (out1)
+      pub_out1_high.publish(im);
   }
 }
 }

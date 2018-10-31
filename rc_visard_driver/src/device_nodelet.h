@@ -62,6 +62,9 @@ public:
 
   virtual void onInit();
 
+  /// Trigger stereo matching in mode 'SingleFrame'
+  ///@return always true, check resp.success
+  bool depthAcquisitionTrigger(std_srvs::Trigger::Request& req, std_srvs::Trigger::Response& resp);
   /// Start Stereo INS
   ///@return always true, check resp.success for whether the dynamics service has been called
   bool dynamicsStart(std_srvs::Trigger::Request& req, std_srvs::Trigger::Response& resp);
@@ -87,6 +90,15 @@ public:
   ///@return always true
   bool getSlamTrajectory(rc_visard_driver::GetTrajectory::Request& req,
                          rc_visard_driver::GetTrajectory::Response& resp);
+  /// Save the onboard SLAM map
+  ///@return always true, check resp.success for wheter map could be saved
+  bool saveSlamMap(std_srvs::Trigger::Request& req, std_srvs::Trigger::Response& resp);
+  /// Load the onboard SLAM map
+  ///@return always true, check resp.success for wheter map could be loaded
+  bool loadSlamMap(std_srvs::Trigger::Request& req, std_srvs::Trigger::Response& resp);
+  /// Remove the onboard SLAM map
+  ///@return always true, check resp.success for wheter map could be removed
+  bool removeSlamMap(std_srvs::Trigger::Request& req, std_srvs::Trigger::Response& resp);
 
 private:
   static ThreadedStream::Ptr CreateDynamicsStreamOfType(rc::dynamics::RemoteInterface::Ptr rcdIface,
@@ -106,11 +118,15 @@ private:
 
   bool dev_supports_gain;
   bool dev_supports_wb;
+  bool dev_supports_depth_acquisition_trigger;
+
+  bool perform_depth_acquisition_trigger;
 
   std::shared_ptr<rcg::Device> rcgdev;
   std::shared_ptr<GenApi::CNodeMapRef> rcgnodemap;
 
   std::mutex mtx;
+  bool iocontrol_avail;
   rc_visard_driver::rc_visard_driverConfig config;
   std::atomic_uint_least32_t level;
 
@@ -125,6 +141,7 @@ private:
   ThreadedStream::Manager::Ptr dynamicsStreams;
 
   /// wrapper for REST-API calls relating to rc_visard's dynamics interface
+  ros::ServiceServer depthAcquisitionTriggerService;
   rc::dynamics::RemoteInterface::Ptr dynamicsInterface;
   ros::ServiceServer dynamicsStartService;
   ros::ServiceServer dynamicsStartSlamService;
@@ -134,6 +151,9 @@ private:
   ros::ServiceServer dynamicsStopSlamService;
   ros::ServiceServer dynamicsResetSlamService;
   ros::ServiceServer getSlamTrajectoryService;
+  ros::ServiceServer slamSaveMapService;
+  ros::ServiceServer slamLoadMapService;
+  ros::ServiceServer slamRemoveMapService;
   ros::Publisher trajPublisher;
   bool autostartDynamics, autostopDynamics, autostartSlam, autopublishTrajectory;
 

@@ -2,6 +2,50 @@
 Changelog for package rc_visard_driver
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+2.4.2 (2018-10-29)
+------------------
+
+2.4.1 (2018-10-29)
+------------------
+* Fixed link error if rc_genicam_api is not installed in a standard directory
+* docker images: upgrade packages first
+
+2.4.0 (2018-10-16)
+------------------
+* added `depth_acquisition_mode` parameter
+* added `depth_acquisition_trigger` service call
+* Reduced latency for passing changes of dynamic parameters and topic discriptions to GenICam
+* Fixed using wrong disparity range in disparity color publisher
+* now depends on rc_genicam_api >= 2.0.0
+
+2.3.0 (2018-08-21)
+------------------
+
+* read params from parameter server before falling back to current device params
+* New image topics ...out1_low and ...out1_high are offered if iocontrol module is available
+
+2.2.1 (2018-07-05)
+------------------
+
+* Changed to component intensity before changing pixel format for supporting color rc_visards with version >= 1.3.0
+
+2.2.0 (2018-07-03)
+------------------
+
+* fix out1_mode/out2_mode description and default
+* change/add service calls for onboard SLAM module:
+  - rename `dynamics_reset_slam` to `slam_reset`
+  - rename `get_trajectory` to `slam_get_trajectory`
+  - add `slam_save_map`, `slam_load_map` and `slam_remove_map`
+* install Rviz example config file
+
+2.1.1 (2018-06-15)
+------------------
+
+* Adjusting disparity range to content of disparity image for colored disparity visualization
+* Added debug message if left and disparity images cannot be synchronized for creating point clouds
+* Implemented parameters for IO control and relaxed time synchronization in case of exposure alternate mode
+
 2.1.0 (2018-04-23)
 ------------------
 

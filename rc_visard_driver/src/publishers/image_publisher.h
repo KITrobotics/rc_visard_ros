@@ -48,16 +48,26 @@ public:
   /**
     Initialization of publisher.
 
-    @param it    Image transport handle.
-    @param left  True for left and false for right camera.
-    @param color True for sending color instead of monochrome images.
+    @param it              Image transport handle.
+    @param frame_id_prefix Prefix for frame ids in published ros messages.
+    @param left            True for left and false for right camera.
+    @param color           True for sending color instead of monochrome images.
+    @param out1_filter     True for also providing ...out1_low and ...out1_high
+                           topics.
   */
 
-  ImagePublisher(image_transport::ImageTransport& it, const std::string& frame_id_prefix, bool left, bool color);
+  ImagePublisher(image_transport::ImageTransport& it, const std::string& frame_id_prefix, bool left, bool color,
+                 bool out1_filter);
 
   bool used() override;
 
-  void publish(const rcg::Buffer* buffer, uint64_t pixelformat) override;
+  void setOut1Alternate(bool alternate)
+  {
+    out1_alternate = alternate;
+  }
+
+  void publish(const rcg::Buffer* buffer, uint32_t part, uint64_t pixelformat) override;
+  void publish(const rcg::Buffer* buffer, uint32_t part, uint64_t pixelformat, bool out1);
 
 private:
   ImagePublisher(const ImagePublisher&);             // forbidden
@@ -66,8 +76,11 @@ private:
   bool left;
   bool color;
   uint32_t seq;
+  bool out1_alternate;
 
   image_transport::Publisher pub;
+  image_transport::Publisher pub_out1_low;
+  image_transport::Publisher pub_out1_high;
 };
 }
 

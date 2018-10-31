@@ -2,6 +2,8 @@
 
 ROS interface for the [Roboception rc_visard][] 3D sensor.
 
+Please also consult the manual for more details: https://doc.rc-visard.com
+
 ## rc_visard_driver
 
 Nodelet/node providing a ROS interface to configure the rc_visard and receive
@@ -68,6 +70,13 @@ Building and installing the package follows the typical ROS catkin workflow.
 ### Configuration and usage
 
 See the [rc_visard_description README](rc_visard_description/README.md) for more details.
+
+## rc_hand_eye_calibration_client
+
+Package for calibrating the rc_visard to a robot.
+See the [rc_hand_eye_calibration_client README](rc_hand_eye_calibration_client/README.md) for more details.
+
+
 
 ## Acknowledgements
 

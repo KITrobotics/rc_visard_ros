@@ -47,7 +47,21 @@ Points2Publisher::Points2Publisher(ros::NodeHandle& nh, const std::string& frame
   t = _t;
   scale = _scale;
 
+  tolerance_ns = 0;
+
   pub = nh.advertise<sensor_msgs::PointCloud2>("points2", 1);
+}
+
+void Points2Publisher::setOut1Alternate(bool alternate)
+{
+  if (alternate)
+  {
+    tolerance_ns = static_cast<uint64_t>(0.050 * 1000000000ull);
+  }
+  else
+  {
+    tolerance_ns = 0;
+  }
 }
 
 bool Points2Publisher::used()
@@ -55,7 +69,12 @@ bool Points2Publisher::used()
   return pub.getNumSubscribers() > 0;
 }
 
-void Points2Publisher::publish(const rcg::Buffer* buffer, uint64_t pixelformat)
+void Points2Publisher::publish(const rcg::Buffer* buffer, uint32_t part, uint64_t pixelformat)
+{
+  publish(buffer, part, pixelformat, false);
+}
+
+void Points2Publisher::publish(const rcg::Buffer* buffer, uint32_t part, uint64_t pixelformat, bool out1)
 {
   if (pub.getNumSubscribers() > 0)
   {
@@ -63,19 +82,41 @@ void Points2Publisher::publish(const rcg::Buffer* buffer, uint64_t pixelformat)
 
     if (pixelformat == Mono8 || pixelformat == YCbCr411_8)
     {
-      left_list.add(buffer);
+      // in alternate exposure mode, skip images for texture with out1 == true,
+      // i.e. with projected pattern
+
+      if (tolerance_ns > 0 && out1)
+      {
+        return;
+      }
+
+      left_list.add(buffer, part);
     }
     else if (pixelformat == Coord3D_C16)
     {
-      disp_list.add(buffer);
+      disp_list.add(buffer, part);
     }
 
     // get corresponding left and disparity image
 
     uint64_t timestamp = buffer->getTimestampNS();
 
-    std::shared_ptr<const rcg::Image> left = left_list.find(timestamp);
-    std::shared_ptr<const rcg::Image> disp = disp_list.find(timestamp);
+    std::shared_ptr<const rcg::Image> left = left_list.find(timestamp, tolerance_ns);
+    std::shared_ptr<const rcg::Image> disp = disp_list.find(timestamp, tolerance_ns);
+
+    // print warning with reason if no left image can be found for disparity image
+
+    if (pixelformat == Coord3D_C16 && !left)
+    {
+      if (timestamp < left_list.getOldestTime())
+      {
+        ROS_DEBUG_STREAM("Cannot find left image for disparity image. Internal queue size to small.");
+      }
+      else
+      {
+        ROS_DEBUG_STREAM("Cannot find left image for disparity image. Left image possibly dropped.");
+      }
+    }
 
     if (left && disp)
     {
