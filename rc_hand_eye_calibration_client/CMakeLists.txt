@@ -120,8 +120,8 @@ generate_dynamic_reconfigure_options(cfg/hand_eye_calibration.cfg)
 ## CATKIN_DEPENDS: catkin_packages dependent projects also need
 ## DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(
-#  INCLUDE_DIRS include
-#  LIBRARIES logging
+ INCLUDE_DIRS include
+ LIBRARIES rc_hand_eye_calibration_client
  CATKIN_DEPENDS message_runtime geometry_msgs
 #  DEPENDS system_lib
 )
@@ -134,26 +134,34 @@ catkin_package(
 ## Your package locations should be listed before other locations
 # include_directories(include)
 include_directories(
+  include
   ${catkin_INCLUDE_DIRS}
   ${CPR_INCLUDE_DIRS}
   ${JSON_INCLUDE_DIRS}
 )
 
 ## Declare a cpp library
-# add_library(logging
-#   src/${PROJECT_NAME}/logging.cpp
-# )
-
-## Declare a cpp executable
-add_executable(rc_hand_eye_calibration_client_node src/rc_hand_eye_calibration_client_node.cpp src/rest_hand_eye_calibration_client.cc)
+add_library(rc_hand_eye_calibration_client
+  src/rest_hand_eye_calibration_client.cc
+)
 
 ## Add cmake target dependencies of the executable/library
 ## as an example, message headers may need to be generated before nodes
-add_dependencies(rc_hand_eye_calibration_client_node rc_hand_eye_calibration_client_generate_messages_cpp)
-add_dependencies(rc_hand_eye_calibration_client_node rc_hand_eye_calibration_client_gencfg)
+add_dependencies(rc_hand_eye_calibration_client rc_hand_eye_calibration_client_generate_messages_cpp)
+add_dependencies(rc_hand_eye_calibration_client rc_hand_eye_calibration_client_gencfg)
+
+## Specify libraries to link a library or executable target against
+target_link_libraries(rc_hand_eye_calibration_client
+  ${catkin_LIBRARIES}
+  ${CPR_LIBRARIES}
+)
+
+## Declare a cpp executable
+add_executable(rc_hand_eye_calibration_client_node src/rc_hand_eye_calibration_client_node.cpp)
 
 ## Specify libraries to link a library or executable target against
 target_link_libraries(rc_hand_eye_calibration_client_node
+  rc_hand_eye_calibration_client
   ${catkin_LIBRARIES}
   ${CPR_LIBRARIES}
 )

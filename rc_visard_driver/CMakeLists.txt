@@ -39,6 +39,7 @@ find_package(catkin REQUIRED COMPONENTS
   nav_msgs
   visualization_msgs
   message_generation
+  rc_hand_eye_calibration_client
 )
 
 ## Generate services in the 'srv' folder

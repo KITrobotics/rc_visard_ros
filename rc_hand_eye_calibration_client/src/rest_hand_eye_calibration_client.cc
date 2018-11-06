@@ -1,4 +1,4 @@
-#include "rest_hand_eye_calibration_client.h"
+#include <rc_hand_eye_calibration_client/rest_hand_eye_calibration_client.h>
 
 #include <ifaddrs.h>
 #include <arpa/inet.h>
@@ -21,22 +21,6 @@ string toString(cpr::Response resp)
     << "url: " << resp.url << endl
     << "text: " << resp.text << endl
     << "error: " << resp.error.message;
-  return s.str();
-}
-
-string toString(list<string> list)
-{
-  stringstream s;
-  s << "[";
-  for (auto it = list.begin(); it != list.end();)
-  {
-    s << *it;
-    if (++it != list.end())
-    {
-      s << ", ";
-    }
-  }
-  s << "]";
   return s.str();
 }
 

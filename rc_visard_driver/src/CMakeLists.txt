@@ -25,6 +25,7 @@ add_library(rc_visard_driver_nodelet ${SRC})
 target_link_libraries(rc_visard_driver_nodelet ${catkin_LIBRARIES})
 target_link_libraries(rc_visard_driver_nodelet ${RC_GENICAM_API_LIBRARIES})
 target_link_libraries(rc_visard_driver_nodelet ${RC_DYNAMICS_API_LIBRARIES})
+# target_link_libraries(rc_visard_driver_nodelet rc_hand_eye_calibration_client)
 
 add_executable(rc_visard_driver device_node.cc)
 target_link_libraries(rc_visard_driver ${catkin_LIBRARIES})

@@ -180,6 +180,9 @@ void DeviceNodelet::keepAliveAndRecoverFromFails()
     return;
   }
 
+  // get calibration and publish to TF
+  publishCalibration();
+
   // setup service for depth acquisition trigger
 
   depthAcquisitionTriggerService = pnh.advertiseService("depth_acquisition_trigger", &DeviceNodelet::depthAcquisitionTrigger, this);
@@ -340,6 +343,14 @@ void DeviceNodelet::keepAliveAndRecoverFromFails()
     }
   }
   std::cout << "rc_visard_driver: stopped." << std::endl;
+}
+
+void DeviceNodelet::publishCalibration()
+{
+  rc_hand_eye_calibration_client::CalibrationRequest req;
+  rc_hand_eye_calibration_client::CalibrationResponse resp;
+
+  CalibrationWrapper::getCalibResultSrv(req, resp);
 }
 
 void DeviceNodelet::initConfiguration(const std::shared_ptr<GenApi::CNodeMapRef>& nodemap,

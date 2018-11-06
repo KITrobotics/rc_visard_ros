@@ -51,6 +51,7 @@
 #include "ThreadedStream.h"
 
 #include <rc_visard_driver/GetTrajectory.h>
+#include <rc_hand_eye_calibration_client/rest_hand_eye_calibration_client.h>
 
 namespace rc
 {
@@ -113,6 +114,8 @@ private:
   void grab(std::string device, rcg::Device::ACCESS access);
 
   void keepAliveAndRecoverFromFails();
+
+  void publishCalibration();
 
   dynamic_reconfigure::Server<rc_visard_driver::rc_visard_driverConfig>* reconfig;
 
