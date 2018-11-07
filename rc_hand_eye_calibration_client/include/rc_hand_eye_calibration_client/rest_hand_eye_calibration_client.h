@@ -74,4 +74,7 @@ class CalibrationWrapper
     int timeoutCurl_; // ms
 
 };
+
+bool getCalibrationPose(std::string ip_addr, geometry_msgs::Pose &camPose);
+
 #endif

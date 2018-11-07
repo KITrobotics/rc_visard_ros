@@ -41,6 +41,38 @@ bool isValidIPAddress(const std::string& ip)
   
 }//anonymous ns
 
+bool getCalibrationPose(std::string ip_addr, geometry_msgs::Pose &camPose)
+{
+  int timeoutCurl_ = 2000;
+  std::string servicesUrl_;
+
+  servicesUrl_ = "http://" + ip_addr + "/api/v1/nodes/rc_hand_eye_calibration/services/";
+
+  cpr::Url url = cpr::Url{ servicesUrl_ + "get_calibration" };
+  auto rest_resp = cpr::Put(url, cpr::Timeout{ timeoutCurl_ });
+  handleCPRResponse(rest_resp);
+
+  auto json_resp = json::parse(rest_resp.text)["response"];
+  bool success = (bool) json_resp["success"];
+  int status = json_resp["status"];
+
+  if (success == false || status != 0) {
+    ROS_ERROR("Could not retrieve valid calibration parameters!!");
+    return false;
+  }
+
+  json js_pose = json_resp["pose"];
+  camPose.position.x = js_pose["position"]["x"];
+  camPose.position.y = js_pose["position"]["y"];
+  camPose.position.z = js_pose["position"]["z"];
+  camPose.orientation.x = js_pose["orientation"]["x"];
+  camPose.orientation.y = js_pose["orientation"]["y"];
+  camPose.orientation.z = js_pose["orientation"]["z"];
+  camPose.orientation.w = js_pose["orientation"]["w"];
+
+  return true;
+}
+
 
 CalibrationWrapper::CalibrationWrapper(std::string name, std::string ip_addr, ros::NodeHandle nh)
   : nh_(nh), ip_addr_(ip_addr), 
