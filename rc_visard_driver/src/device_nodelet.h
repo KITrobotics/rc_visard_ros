@@ -115,7 +115,7 @@ private:
 
   void keepAliveAndRecoverFromFails();
 
-  void publishCalibration();
+  void publishCalibration(std::string ip_addr);
 
   dynamic_reconfigure::Server<rc_visard_driver::rc_visard_driverConfig>* reconfig;
 
@@ -135,6 +135,9 @@ private:
 
   std::thread imageThread;
   std::atomic_bool stopImageThread, imageRequested, imageSuccess;
+
+  std::thread calibThread;
+  std::atomic_bool stopCalibThread;
 
   std::thread recoverThread;
   std::atomic_bool stopRecoverThread;

@@ -59,6 +59,7 @@
 #include <ros/ros.h>
 #include <geometry_msgs/PoseWithCovarianceStamped.h>
 #include <tf/transform_broadcaster.h>
+#include <tf2_ros/static_transform_broadcaster.h>
 
 namespace rc
 {
@@ -112,11 +113,14 @@ DeviceNodelet::~DeviceNodelet()
   // signal running threads and wait until they finish
 
   stopImageThread = true;
+  stopCalibThread = true;
   dynamicsStreams->stop_all();
   stopRecoverThread = true;
 
   if (imageThread.joinable())
     imageThread.join();
+  if (calibThread.joinable())
+    calibThread.join();
   dynamicsStreams->join_all();
   if (recoverThread.joinable())
     recoverThread.join();
@@ -179,9 +183,6 @@ void DeviceNodelet::keepAliveAndRecoverFromFails()
     ROS_FATAL_STREAM("rc_visard_driver: Access must be 'control', 'exclusive' or 'off': " << access);
     return;
   }
-
-  // get calibration and publish to TF
-  publishCalibration();
 
   // setup service for depth acquisition trigger
 
@@ -272,6 +273,10 @@ void DeviceNodelet::keepAliveAndRecoverFromFails()
         // instantiating dynamics interface and autostart dynamics on sensor if desired
 
         std::string currentIPAddress = rcg::getString(rcgnodemap, "GevCurrentIPAddress", true);
+
+        // get calibration and publish to TF
+        calibThread = std::thread(&DeviceNodelet::publishCalibration, this, currentIPAddress);
+
         dynamicsInterface = rcd::RemoteInterface::create(currentIPAddress);
         if (autostartDynamics || autostartSlam)
         {
@@ -345,12 +350,33 @@ void DeviceNodelet::keepAliveAndRecoverFromFails()
   std::cout << "rc_visard_driver: stopped." << std::endl;
 }
 
-void DeviceNodelet::publishCalibration()
+void DeviceNodelet::publishCalibration(std::string ip_addr)
 {
-  rc_hand_eye_calibration_client::CalibrationRequest req;
-  rc_hand_eye_calibration_client::CalibrationResponse resp;
+  ros::NodeHandle n_;
+  geometry_msgs::Pose camPose;
+  tf2_ros::StaticTransformBroadcaster tf_pub;
+  geometry_msgs::TransformStamped transform_stamped;
+  std::string cam_frame = tfPrefix + "roboception_camera";
+  stopCalibThread = false;
 
-  CalibrationWrapper::getCalibResultSrv(req, resp);
+  bool success = getCalibrationPose(ip_addr, camPose);
+  if (!success)
+    return;
+
+  transform_stamped.transform.translation.x = camPose.position.x;
+  transform_stamped.transform.translation.y = camPose.position.y;
+  transform_stamped.transform.translation.z = camPose.position.z;
+  transform_stamped.transform.rotation = camPose.orientation;
+  transform_stamped.header.stamp = ros::Time::now();
+  transform_stamped.header.frame_id = "world";
+  transform_stamped.child_frame_id = cam_frame;
+
+  ROS_INFO("Publishing calibration to TF");
+  while (!stopCalibThread)
+  {
+    tf_pub.sendTransform(transform_stamped);
+    usleep(1000 * 50);
+  }
 }
 
 void DeviceNodelet::initConfiguration(const std::shared_ptr<GenApi::CNodeMapRef>& nodemap,
