@@ -77,7 +77,7 @@ generate_dynamic_reconfigure_options(cfg/rc_visard_driver.cfg)
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES rc_stereocamera
-  CATKIN_DEPENDS nodelet roscpp sensor_msgs geometry_msgs std_srvs nav_msgs
+  CATKIN_DEPENDS nodelet roscpp sensor_msgs geometry_msgs std_srvs nav_msgs message_runtime
 #  DEPENDS
 )
 
