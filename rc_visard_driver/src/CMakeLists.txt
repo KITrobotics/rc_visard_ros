@@ -35,4 +35,4 @@ install(TARGETS rc_visard_driver rc_visard_driver_nodelet
         ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
         LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION})
 
-add_dependencies(rc_visard_driver_nodelet rc_visard_driver_gencfg)
+add_dependencies(rc_visard_driver_nodelet rc_visard_driver_gencfg rc_visard_driver_generate_messages_cpp)

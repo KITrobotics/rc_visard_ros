@@ -41,6 +41,7 @@
   <depend>visualization_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>diagnostic_updater</depend>
+  <depend>rc_hand_eye_calibration_client</depend>
   <!-- <depend>diagnostic_msgs</depend> -->
 
   <doc_depend>doxygen</doc_depend>
