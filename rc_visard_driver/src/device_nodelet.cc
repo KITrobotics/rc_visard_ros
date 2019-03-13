@@ -61,6 +61,41 @@
 #include <tf/transform_broadcaster.h>
 #include <tf2_ros/static_transform_broadcaster.h>
 
+namespace {
+
+  /// Returns true if vendor name and model name indicate that genicam device is an rc_visard
+  bool isRcVisardDevice(const std::string& vendor, const std::string& model)
+  {
+    bool isKuka3DPerception = vendor.find("KUKA") != std::string::npos && model.find("3d_perception") != std::string::npos;
+    bool isRcVisard = vendor.find("Roboception") != std::string::npos && model.find("rc_visard") != std::string::npos;
+    return isKuka3DPerception || isRcVisard;
+  }
+
+  /// Iterates through all interfaces and looks for rc_visard devices. Returns all found device ids.
+  std::vector<std::string> discoverRcVisardDevices()
+  {
+    std::vector<std::string> device_ids;
+    for (auto system : rcg::System::getSystems())
+    {
+      system->open();
+      for (auto interf : system->getInterfaces())
+      {
+        interf->open();
+        for (auto dev : interf->getDevices())
+        {
+          if (isRcVisardDevice(dev->getVendor(), dev->getModel()))
+          {
+            device_ids.push_back(dev->getID());
+          }
+        }
+        interf->close();
+      }
+      system->close();
+    }
+    return device_ids;
+  }
+}
+
 namespace rc
 {
 namespace rcd = dynamics;
@@ -104,6 +139,9 @@ DeviceNodelet::DeviceNodelet()
   stopRecoverThread = false;
   recoveryRequested = true;
   cntConsecutiveRecoveryFails = -1;  // first time not giving any warnings
+  totalIncompleteBuffers = 0;
+  totalConnectionLosses = 0;
+  totalImageReceiveTimeouts = 0;
 }
 
 DeviceNodelet::~DeviceNodelet()
@@ -134,6 +172,10 @@ void DeviceNodelet::onInit()
 {
   // run initialization and recover routine in separate thread
   recoverThread = std::thread(&DeviceNodelet::keepAliveAndRecoverFromFails, this);
+
+  // add callbacks for diagnostics publishing
+  updater.add("Connection", this, &DeviceNodelet::produce_connection_diagnostics);
+  updater.add("Device", this, &DeviceNodelet::produce_device_diagnostics);
 }
 
 void DeviceNodelet::keepAliveAndRecoverFromFails()
@@ -142,10 +184,11 @@ void DeviceNodelet::keepAliveAndRecoverFromFails()
 
   ros::NodeHandle pnh(getPrivateNodeHandle());
 
-  // device defaults to `rc_visard`, which is the default user defined name
-  // and works as long as only one sensor with that name is connected
-  std::string device = "rc_visard";
+  // device defaults to empty string which serves as a wildcard to connect to any
+  // rc_visard as long as only one sensor is available in the network
+  std::string device = "";
   std::string access = "control";
+  maxNumRecoveryTrials = 5;
 
   tfEnabled = false;
   autostartDynamics = autostopDynamics = autostartSlam = autopublishTrajectory = false;
@@ -154,16 +197,12 @@ void DeviceNodelet::keepAliveAndRecoverFromFails()
 
   pnh.param("device", device, device);
   pnh.param("gev_access", access, access);
+  pnh.param("max_reconnects", maxNumRecoveryTrials, maxNumRecoveryTrials);
   pnh.param("enable_tf", tfEnabled, tfEnabled);
   pnh.param("autostart_dynamics", autostartDynamics, autostartDynamics);
   pnh.param("autostart_dynamics_with_slam", autostartSlam, autostartSlam);
   pnh.param("autostop_dynamics", autostopDynamics, autostopDynamics);
   pnh.param("autopublish_trajectory", autopublishTrajectory, autopublishTrajectory);
-
-  if (device.size() == 0)
-  {
-    ROS_FATAL("The rc_visard device ID must be given in the private parameter 'device'!");
-  }
 
   rcg::Device::ACCESS access_id;
   if (access == "exclusive")
@@ -208,11 +247,12 @@ void DeviceNodelet::keepAliveAndRecoverFromFails()
     trajPublisher = getNodeHandle().advertise<nav_msgs::Path>("trajectory", 10);
   }
 
-  // run start-keep-alive-a  nd-recover loop
+  // run start-keep-alive-and-recover loop
 
-  static int maxNumRecoveryTrials = 5;
-
-  while (!stopRecoverThread && cntConsecutiveRecoveryFails <= maxNumRecoveryTrials)
+  while (!stopRecoverThread && (
+          (maxNumRecoveryTrials < 0) ||
+          (cntConsecutiveRecoveryFails <= maxNumRecoveryTrials)
+        ))
   {
     // check if everything is running smoothly
 
@@ -225,10 +265,18 @@ void DeviceNodelet::keepAliveAndRecoverFromFails()
         ROS_INFO("rc_visard_driver: Device successfully recovered from previous fail(s)!");
       }
 
+      updater.update(); // regularly update the status for publishing diagnostics  (rate limited by parameter '~diagnostic_period')
       usleep(1000 * 100);
       continue;
     }
+
+    // it's not running smoothly, we need recovery
+
     cntConsecutiveRecoveryFails++;
+    if (cntConsecutiveRecoveryFails==1) {
+      totalConnectionLosses++;
+    }
+    updater.force_update(); // immediately update the diagnostics status
 
     // stop image and dynamics threads
 
@@ -242,7 +290,10 @@ void DeviceNodelet::keepAliveAndRecoverFromFails()
     // try discover, open and bring up device
 
     bool successfullyOpened = false;
-    while (!stopRecoverThread && !successfullyOpened && cntConsecutiveRecoveryFails <= maxNumRecoveryTrials)
+    while (!stopRecoverThread && !successfullyOpened && (
+          (maxNumRecoveryTrials < 0) ||
+          (cntConsecutiveRecoveryFails <= maxNumRecoveryTrials)
+        ))
     {
       // if we are recovering, put warning and wait before retrying
 
@@ -250,7 +301,9 @@ void DeviceNodelet::keepAliveAndRecoverFromFails()
       {
         ROS_ERROR_STREAM("rc_visard_driver: Failed or lost connection. Trying to recover"
                          " rc_visard_driver from failed state ("
-                         << cntConsecutiveRecoveryFails << "/" << maxNumRecoveryTrials << ")...");
+                         << cntConsecutiveRecoveryFails
+                         << ((maxNumRecoveryTrials>=0) ? std::string("/") + std::to_string(maxNumRecoveryTrials) : "" )
+                         << ")...");
         usleep(1000 * 500);
       }
 
@@ -260,15 +313,42 @@ void DeviceNodelet::keepAliveAndRecoverFromFails()
         {
           rcgdev->close();
         }
-        rcgdev = rcg::getDevice(device.c_str());
+
+        if (device.size() == 0)
+        {
+          ROS_INFO("No device ID given in the private parameter 'device'! Trying to auto-detect a single rc_visard device in the network...");
+          auto device_ids = discoverRcVisardDevices();
+          if (device_ids.size() != 1)
+          {
+            updater.force_update();
+            throw std::runtime_error("Auto-connection with rc_visard device failed because none or multiple devices were found!");
+          }
+          ROS_INFO_STREAM("Found rc_visard device '" << device_ids[0] << "'");
+          rcgdev = rcg::getDevice(device_ids[0].c_str());
+        } else {
+          rcgdev = rcg::getDevice(device.c_str());
+        }
+
         if (!rcgdev)
         {
+          updater.force_update();
           throw std::invalid_argument("Unknown or non-unique device '" + device + "'");
         }
 
         ROS_INFO_STREAM("rc_visard_driver: Opening connection to '" << rcgdev->getID() << "'");
         rcgdev->open(access_id);
         rcgnodemap = rcgdev->getRemoteNodeMap();
+
+        // extract some diagnostics data from device
+        dev_serialno = rcg::getString(rcgnodemap, "DeviceID", true);
+        dev_macaddr = rcg::getString(rcgnodemap, "GevMACAddress", true);
+        dev_ipaddr = rcg::getString(rcgnodemap, "GevCurrentIPAddress", true);
+        dev_version = rcg::getString(rcgnodemap, "DeviceVersion", true);
+        gev_userid = rcg::getString(rcgnodemap, "DeviceUserID", true);
+        gev_packet_size = rcg::getString(rcgnodemap, "GevSCPSPacketSize", true);
+
+        updater.setHardwareID(dev_serialno);
+        updater.force_update();
 
         // instantiating dynamics interface and autostart dynamics on sensor if desired
 
@@ -321,7 +401,7 @@ void DeviceNodelet::keepAliveAndRecoverFromFails()
     if (stopRecoverThread)
       break;
 
-    if (cntConsecutiveRecoveryFails > maxNumRecoveryTrials)
+    if ( (maxNumRecoveryTrials >= 0) && (cntConsecutiveRecoveryFails > maxNumRecoveryTrials) )
     {
       ROS_FATAL_STREAM("rc_visard_driver: could not recover from failed state!");
       break;
@@ -460,6 +540,7 @@ void DeviceNodelet::initConfiguration(const std::shared_ptr<GenApi::CNodeMapRef>
   v = rcg::getEnum(nodemap, "DepthQuality", true);
   cfg.depth_quality = v;
 
+  cfg.depth_static_scene = rcg::getBoolean(nodemap, "DepthStaticScene", false);
   cfg.depth_disprange = rcg::getInteger(nodemap, "DepthDispRange", 0, 0, true);
   cfg.depth_seg = rcg::getInteger(nodemap, "DepthSeg", 0, 0, true);
   cfg.depth_median = rcg::getInteger(nodemap, "DepthMedian", 0, 0, true);
@@ -470,6 +551,32 @@ void DeviceNodelet::initConfiguration(const std::shared_ptr<GenApi::CNodeMapRef>
   cfg.depth_maxdeptherr = rcg::getFloat(nodemap, "DepthMaxDepthErr", 0, 0, true);
 
   cfg.ptp_enabled = rcg::getBoolean(nodemap, "GevIEEE1588", false);
+
+  // fix for rc_visard < 1.5
+
+  if (cfg.depth_quality[0] == 'S')
+  {
+    cfg.depth_quality = "High";
+    cfg.depth_static_scene = true;
+  }
+
+  // check for stereo_plus license
+
+  try
+  {
+    cfg.depth_smooth = rcg::getBoolean(nodemap, "DepthSmooth", true);
+    stereo_plus_avail = nodemap->_GetNode("DepthSmooth")->GetAccessMode() == GenApi::RW;
+
+    if (!stereo_plus_avail)
+    {
+      ROS_INFO("rc_visard_driver: License for stereo_plus not available, disabling depth_quality=Full and depth_smooth.");
+    }
+  }
+  catch (const std::exception&)
+  {
+    ROS_WARN("rc_visard_driver: rc_visard has an older firmware, disabling depth_quality=Full and depth_smooth.");
+    stereo_plus_avail = false;
+  }
 
   // check if io-control is available and get values
 
@@ -510,64 +617,68 @@ void DeviceNodelet::initConfiguration(const std::shared_ptr<GenApi::CNodeMapRef>
     iocontrol_avail = false;
   }
 
-  // setup reconfigure server
+
+  // try to get ROS parameters: if parameter is not set in parameter server, default to current sensor configuration
+
+  pnh.param("camera_fps", cfg.camera_fps, cfg.camera_fps);
+  pnh.param("camera_exp_auto", cfg.camera_exp_auto, cfg.camera_exp_auto);
+  pnh.param("camera_exp_value", cfg.camera_exp_value, cfg.camera_exp_value);
+  pnh.param("camera_gain_value", cfg.camera_gain_value, cfg.camera_gain_value);
+  pnh.param("camera_exp_max", cfg.camera_exp_max, cfg.camera_exp_max);
+  pnh.param("camera_wb_auto", cfg.camera_wb_auto, cfg.camera_wb_auto);
+  pnh.param("camera_wb_ratio_red", cfg.camera_wb_ratio_red, cfg.camera_wb_ratio_red);
+  pnh.param("camera_wb_ratio_blue", cfg.camera_wb_ratio_blue, cfg.camera_wb_ratio_blue);
+  pnh.param("depth_acquisition_mode", cfg.depth_acquisition_mode, cfg.depth_acquisition_mode);
+  pnh.param("depth_quality", cfg.depth_quality, cfg.depth_quality);
+  pnh.param("depth_static_scene", cfg.depth_static_scene, cfg.depth_static_scene);
+  pnh.param("depth_disprange", cfg.depth_disprange, cfg.depth_disprange);
+  pnh.param("depth_seg", cfg.depth_seg, cfg.depth_seg);
+  pnh.param("depth_smooth", cfg.depth_smooth, cfg.depth_smooth);
+  pnh.param("depth_median", cfg.depth_median, cfg.depth_median);
+  pnh.param("depth_fill", cfg.depth_fill, cfg.depth_fill);
+  pnh.param("depth_minconf", cfg.depth_minconf, cfg.depth_minconf);
+  pnh.param("depth_mindepth", cfg.depth_mindepth, cfg.depth_mindepth);
+  pnh.param("depth_maxdepth", cfg.depth_maxdepth, cfg.depth_maxdepth);
+  pnh.param("depth_maxdeptherr", cfg.depth_maxdeptherr, cfg.depth_maxdeptherr);
+  pnh.param("ptp_enabled", cfg.ptp_enabled, cfg.ptp_enabled);
+  pnh.param("out1_mode", cfg.out1_mode, cfg.out1_mode);
+  pnh.param("out2_mode", cfg.out2_mode, cfg.out2_mode);
+
+  // set parameters on parameter server so that dynamic reconfigure picks them up
+
+  pnh.setParam("camera_fps", cfg.camera_fps);
+  pnh.setParam("camera_exp_auto", cfg.camera_exp_auto);
+  pnh.setParam("camera_exp_value", cfg.camera_exp_value);
+  pnh.setParam("camera_gain_value", cfg.camera_gain_value);
+  pnh.setParam("camera_exp_max", cfg.camera_exp_max);
+  pnh.setParam("camera_wb_auto", cfg.camera_wb_auto);
+  pnh.setParam("camera_wb_ratio_red", cfg.camera_wb_ratio_red);
+  pnh.setParam("camera_wb_ratio_blue", cfg.camera_wb_ratio_blue);
+  pnh.setParam("depth_acquisition_mode", cfg.depth_acquisition_mode);
+  pnh.setParam("depth_quality", cfg.depth_quality);
+  pnh.setParam("depth_static_scene", cfg.depth_static_scene);
+  pnh.setParam("depth_disprange", cfg.depth_disprange);
+  pnh.setParam("depth_seg", cfg.depth_seg);
+  pnh.setParam("depth_smooth", cfg.depth_smooth);
+  pnh.setParam("depth_median", cfg.depth_median);
+  pnh.setParam("depth_fill", cfg.depth_fill);
+  pnh.setParam("depth_minconf", cfg.depth_minconf);
+  pnh.setParam("depth_mindepth", cfg.depth_mindepth);
+  pnh.setParam("depth_maxdepth", cfg.depth_maxdepth);
+  pnh.setParam("depth_maxdeptherr", cfg.depth_maxdeptherr);
+  pnh.setParam("ptp_enabled", cfg.ptp_enabled);
+  pnh.setParam("out1_mode", cfg.out1_mode);
+  pnh.setParam("out2_mode", cfg.out2_mode);
 
   if (reconfig == 0)
   {
-    // try to get ROS parameters: if parameter is not set in parameter server, default to current sensor configuration
-
-    pnh.param("camera_fps", cfg.camera_fps, cfg.camera_fps);
-    pnh.param("camera_exp_auto", cfg.camera_exp_auto, cfg.camera_exp_auto);
-    pnh.param("camera_exp_value", cfg.camera_exp_value, cfg.camera_exp_value);
-    pnh.param("camera_gain_value", cfg.camera_gain_value, cfg.camera_gain_value);
-    pnh.param("camera_exp_max", cfg.camera_exp_max, cfg.camera_exp_max);
-    pnh.param("camera_wb_auto", cfg.camera_wb_auto, cfg.camera_wb_auto);
-    pnh.param("camera_wb_ratio_red", cfg.camera_wb_ratio_red, cfg.camera_wb_ratio_red);
-    pnh.param("camera_wb_ratio_blue", cfg.camera_wb_ratio_blue, cfg.camera_wb_ratio_blue);
-    pnh.param("depth_acquisition_mode", cfg.depth_acquisition_mode, cfg.depth_acquisition_mode);
-    pnh.param("depth_quality", cfg.depth_quality, cfg.depth_quality);
-    pnh.param("depth_disprange", cfg.depth_disprange, cfg.depth_disprange);
-    pnh.param("depth_seg", cfg.depth_seg, cfg.depth_seg);
-    pnh.param("depth_median", cfg.depth_median, cfg.depth_median);
-    pnh.param("depth_fill", cfg.depth_fill, cfg.depth_fill);
-    pnh.param("depth_minconf", cfg.depth_minconf, cfg.depth_minconf);
-    pnh.param("depth_mindepth", cfg.depth_mindepth, cfg.depth_mindepth);
-    pnh.param("depth_maxdepth", cfg.depth_maxdepth, cfg.depth_maxdepth);
-    pnh.param("depth_maxdeptherr", cfg.depth_maxdeptherr, cfg.depth_maxdeptherr);
-    pnh.param("ptp_enabled", cfg.ptp_enabled, cfg.ptp_enabled);
-    pnh.param("out1_mode", cfg.out1_mode, cfg.out1_mode);
-    pnh.param("out2_mode", cfg.out2_mode, cfg.out2_mode);
-
-    // set parameters on parameter server so that dynamic reconfigure picks them up
-
-    pnh.setParam("camera_fps", cfg.camera_fps);
-    pnh.setParam("camera_exp_auto", cfg.camera_exp_auto);
-    pnh.setParam("camera_exp_value", cfg.camera_exp_value);
-    pnh.setParam("camera_gain_value", cfg.camera_gain_value);
-    pnh.setParam("camera_exp_max", cfg.camera_exp_max);
-    pnh.setParam("camera_wb_auto", cfg.camera_wb_auto);
-    pnh.setParam("camera_wb_ratio_red", cfg.camera_wb_ratio_red);
-    pnh.setParam("camera_wb_ratio_blue", cfg.camera_wb_ratio_blue);
-    pnh.setParam("depth_acquisition_mode", cfg.depth_acquisition_mode);
-    pnh.setParam("depth_quality", cfg.depth_quality);
-    pnh.setParam("depth_disprange", cfg.depth_disprange);
-    pnh.setParam("depth_seg", cfg.depth_seg);
-    pnh.setParam("depth_median", cfg.depth_median);
-    pnh.setParam("depth_fill", cfg.depth_fill);
-    pnh.setParam("depth_minconf", cfg.depth_minconf);
-    pnh.setParam("depth_mindepth", cfg.depth_mindepth);
-    pnh.setParam("depth_maxdepth", cfg.depth_maxdepth);
-    pnh.setParam("depth_maxdeptherr", cfg.depth_maxdeptherr);
-    pnh.setParam("ptp_enabled", cfg.ptp_enabled);
-    pnh.setParam("out1_mode", cfg.out1_mode);
-    pnh.setParam("out2_mode", cfg.out2_mode);
-
     // TODO: we need to dismangle initialization of dynreconfserver from not-READONLY-access-condition
     reconfig = new dynamic_reconfigure::Server<rc_visard_driver::rc_visard_driverConfig>(pnh);
-    dynamic_reconfigure::Server<rc_visard_driver::rc_visard_driverConfig>::CallbackType cb;
-    cb = boost::bind(&DeviceNodelet::reconfigure, this, _1, _2);
-    reconfig->setCallback(cb);
   }
+  // always set callback to (re)load configuration even after recovery
+  dynamic_reconfigure::Server<rc_visard_driver::rc_visard_driverConfig>::CallbackType cb;
+  cb = boost::bind(&DeviceNodelet::reconfigure, this, _1, _2);
+  reconfig->setCallback(cb);
 }
 
 void DeviceNodelet::reconfigure(rc_visard_driver::rc_visard_driverConfig& c, uint32_t l)
@@ -619,13 +730,19 @@ void DeviceNodelet::reconfigure(rc_visard_driver::rc_visard_driverConfig& c, uin
   {
     c.depth_quality = "Medium";
   }
-  else if (c.depth_quality[0] == 'S')
+  else if (c.depth_quality[0] == 'F' && stereo_plus_avail)
   {
-    c.depth_quality = "StaticHigh";
+    c.depth_quality = "Full";
   }
   else
   {
     c.depth_quality = "High";
+  }
+
+  if (!stereo_plus_avail)
+  {
+    c.depth_smooth=false;
+    l &= ~4194304;
   }
 
   if (iocontrol_avail)
@@ -719,26 +836,28 @@ void setConfiguration(const std::shared_ptr<GenApi::CNodeMapRef>& nodemap,
 
         if (cfg.camera_wb_auto)
         {
-          rcg::setEnum(nodemap, "BalanceWhiteAuto", "Continuous", true);
+          rcg::setEnum(nodemap, "BalanceWhiteAuto", "Continuous", false);
         }
         else
         {
-          rcg::setEnum(nodemap, "BalanceWhiteAuto", "Off", true);
+          rcg::setEnum(nodemap, "BalanceWhiteAuto", "Off", false);
         }
       }
 
       if (lvl & 32768)
       {
         lvl &= ~32768;
-        rcg::setEnum(nodemap, "BalanceRatioSelector", "Red", true);
-        rcg::setFloat(nodemap, "BalanceRatio", cfg.camera_wb_ratio_red, true);
+
+        rcg::setEnum(nodemap, "BalanceRatioSelector", "Red", false);
+        rcg::setFloat(nodemap, "BalanceRatio", cfg.camera_wb_ratio_red, false);
       }
 
       if (lvl & 65536)
       {
         lvl &= ~65536;
-        rcg::setEnum(nodemap, "BalanceRatioSelector", "Blue", true);
-        rcg::setFloat(nodemap, "BalanceRatio", cfg.camera_wb_ratio_blue, true);
+
+        rcg::setEnum(nodemap, "BalanceRatioSelector", "Blue", false);
+        rcg::setFloat(nodemap, "BalanceRatio", cfg.camera_wb_ratio_blue, false);
       }
 
       if (lvl & 1048576)
@@ -771,7 +890,21 @@ void setConfiguration(const std::shared_ptr<GenApi::CNodeMapRef>& nodemap,
         rcg::getEnum(nodemap, "DepthQuality", list, true);
 
         std::string val;
-        for (size_t i = 0; i < list.size(); i++)
+
+        if (cfg.depth_quality == "High" && cfg.depth_static_scene)
+        {
+          // support for rc_visard < 1.5
+
+          for (size_t i = 0; i < list.size() && val.size() == 0; i++)
+          {
+            if (list[i].compare(0, 1, "StaticHigh", 0, 1) == 0)
+            {
+              val = "StaticHigh";
+            }
+          }
+        }
+
+        for (size_t i = 0; i < list.size() && val.size() == 0; i++)
         {
           if (list[i].compare(0, 1, cfg.depth_quality, 0, 1) == 0)
           {
@@ -785,6 +918,40 @@ void setConfiguration(const std::shared_ptr<GenApi::CNodeMapRef>& nodemap,
         }
       }
 
+      if (lvl & 2097152)
+      {
+        lvl &= ~2097152;
+
+        if (!rcg::setBoolean(nodemap, "DepthStaticScene", cfg.depth_static_scene, false))
+        {
+          // support for rc_visard < 1.5
+
+          std::string quality = cfg.depth_quality;
+
+          if (cfg.depth_static_scene && quality == "High")
+          {
+            quality = "StaticHigh";
+          }
+
+          std::vector<std::string> list;
+          rcg::getEnum(nodemap, "DepthQuality", list, true);
+
+          std::string val;
+          for (size_t i = 0; i < list.size() && val.size() == 0; i++)
+          {
+            if (list[i].compare(0, 1, quality, 0, 1) == 0)
+            {
+              val = list[i];
+            }
+          }
+
+          if (val.size() > 0)
+          {
+            rcg::setEnum(nodemap, "DepthQuality", val.c_str(), true);
+          }
+        }
+      }
+
       if (lvl & 32)
       {
         lvl &= ~32;
@@ -795,6 +962,12 @@ void setConfiguration(const std::shared_ptr<GenApi::CNodeMapRef>& nodemap,
       {
         lvl &= ~64;
         rcg::setInteger(nodemap, "DepthSeg", cfg.depth_seg, true);
+      }
+
+      if (lvl & 4194304)
+      {
+        lvl &= ~4194304;
+        rcg::setBoolean(nodemap, "DepthSmooth", cfg.depth_smooth, false);
       }
 
       if (lvl & 128)
@@ -936,6 +1109,10 @@ void DeviceNodelet::grab(std::string device, rcg::Device::ACCESS access)
     imageSuccess = false;
     try
     {
+      // mark all dynamic parameters as changed
+
+      level=0xffffffff;
+
       // initially switch off all components
 
       disableAll(rcgnodemap);
@@ -1052,13 +1229,12 @@ void DeviceNodelet::grab(std::string device, rcg::Device::ACCESS access)
 
       std::vector<std::shared_ptr<rcg::Stream> > stream = rcgdev->getStreams();
 
+      gev_packet_size="";
+
       if (stream.size() > 0)
       {
         stream[0]->open();
         stream[0]->startStreaming();
-
-        ROS_INFO_STREAM("rc_visard_driver: Image streams ready (Package size "
-                        << rcg::getString(rcgnodemap, "GevSCPSPacketSize") << ")");
 
         // enter grabbing loop
 #if ROS_HAS_STEADYTIME
@@ -1073,6 +1249,13 @@ void DeviceNodelet::grab(std::string device, rcg::Device::ACCESS access)
 
           if (buffer != 0 && !buffer->getIsIncomplete())
           {
+            if (gev_packet_size.size() == 0)
+            {
+              gev_packet_size = rcg::getString(rcgnodemap, "GevSCPSPacketSize", true, true);
+              ROS_INFO_STREAM("rc_visard_driver: Image streams ready (Packet size "
+                              << gev_packet_size << ")");
+            }
+
             // get out1 line status from chunk data if possible
 
             bool out1 = false;
@@ -1139,6 +1322,7 @@ void DeviceNodelet::grab(std::string device, rcg::Device::ACCESS access)
 #else
             tlastimage = ros::WallTime::now();
 #endif
+            totalIncompleteBuffers++;
             ROS_WARN("rc_visard_driver: Received incomplete image buffer");
           }
           else if (buffer == 0)
@@ -1157,12 +1341,22 @@ void DeviceNodelet::grab(std::string device, rcg::Device::ACCESS access)
 
               if (t > 3)  // report error
               {
+                totalImageReceiveTimeouts++;
                 std::ostringstream out;
-
                 out << "No images received for " << t << " seconds!";
-
                 throw std::underflow_error(out.str());
               }
+            }
+            else
+            {
+              // if nothing is expected then store current time as last time
+              // to avoid possible timeout after resubscription
+
+#if ROS_HAS_STEADYTIME
+              tlastimage = ros::SteadyTime::now();
+#else
+              tlastimage = ros::WallTime::now();
+#endif
             }
           }
 
@@ -1305,6 +1499,7 @@ void DeviceNodelet::grab(std::string device, rcg::Device::ACCESS access)
   {
     ROS_ERROR_STREAM("rc_visard_driver: Image grabbing failed.");
     recoveryRequested = true;
+    updater.force_update();
   }
 }
 
@@ -1557,6 +1752,53 @@ bool DeviceNodelet::removeSlamMap(std_srvs::Trigger::Request& req, std_srvs::Tri
 
   return true;
 }
+
+void DeviceNodelet::produce_connection_diagnostics(diagnostic_updater::DiagnosticStatusWrapper &stat)
+{
+  stat.add("connection_loss_total", totalConnectionLosses);
+  stat.add("incomplete_buffers_total", totalIncompleteBuffers);
+  stat.add("image_receive_timeouts_total", totalImageReceiveTimeouts);
+  stat.add("current_reconnect_trial", cntConsecutiveRecoveryFails);
+
+  // general connection status is supervised by the recoveryRequested variable
+
+  if (recoveryRequested) {
+    stat.summary(diagnostic_msgs::DiagnosticStatus::ERROR, "Disconnected");
+    return;
+  }
+
+  // at least we are connected to gev server
+
+  stat.add("ip_address", dev_ipaddr);
+  stat.add("gev_packet_size", gev_packet_size);
+
+  if (imageRequested) {
+    if (imageSuccess) {
+      // someone subscribed to images, and we actually receive data via GigE vision
+      stat.summary(diagnostic_msgs::DiagnosticStatus::OK, "Streaming");
+    } else {
+      // someone subscribed to images, but we do not receive any data via GigE vision (yet)
+      stat.summary(diagnostic_msgs::DiagnosticStatus::WARN, "No data");
+    }
+  } else {
+    // no one requested images -> node is ok but stale
+    stat.summary(diagnostic_msgs::DiagnosticStatus::OK, "Idle");
+  }
+
+}
+
+void DeviceNodelet::produce_device_diagnostics(diagnostic_updater::DiagnosticStatusWrapper &stat) {
+  if (dev_serialno.empty()) {
+    stat.summary(diagnostic_msgs::DiagnosticStatus::ERROR, "Unknown");
+  } else {
+    stat.summary(diagnostic_msgs::DiagnosticStatus::OK, "Info");
+    stat.add("serial", dev_serialno);
+    stat.add("mac", dev_macaddr);
+    stat.add("user_id", gev_userid);
+    stat.add("image_version", dev_version);
+  }
+}
+
 }
 
 PLUGINLIB_EXPORT_CLASS(rc::DeviceNodelet, nodelet::Nodelet)
